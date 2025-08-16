@@ -1,0 +1,57 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - master
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: myapp
+  ECS_CLUSTER: my-ecs-cluster
+  ECS_SERVICE: my-ecs-service
+  CONTAINER_NAME: my-container
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-role
+           aws-region: ${{ env.AWS_REGION }}
+           role-session-name: GitHubActionsSession
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v1
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: terraform apply -auto-approve
+        env:
+          TF_VAR_image_tag: ${{ github.sha }}
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      - name: Build, tag, and push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./docker
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Force new deployment
+        run: |
+          aws ecs update-service --cluster $ECS_CLUSTER \
+                              --service $ECS_SERVICE \
+                              --force-new-deployment
+    
